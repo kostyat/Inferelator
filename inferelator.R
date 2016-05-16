@@ -5,7 +5,7 @@
 # Example call: Rscript inferelator.R jobs/dream4_cfg.R
 
 
-library('Matrix')
+require(Matrix)
 
 rm(list=ls())
 gc()
@@ -18,9 +18,6 @@ source('R_scripts/bayesianRegression.R')
 source('R_scripts/men.R')
 source('R_scripts/evaluate.R')
 source('R_scripts/tfa.R')
-source('R_scripts/group_predictors.R')
-source('R_scripts/summarize_results.R')
-source('R_scripts/vis_tfs_and_targets.R')
 
 
 date.time.str <- format(Sys.time(), "%Y-%m-%d_%H-%M-%S")
@@ -30,20 +27,21 @@ start.proc.time <- proc.time()
 # default job parameters
 PARS <- list()
 
-PARS$input.dir <- 'input/dream4'
+PARS$input.dir <- 'input/yeast/gpl90'
 
-PARS$exp.mat.file <- 'expression.tsv'
+PARS$exp.mat.file <- 'expression_svd.tsv'
 PARS$tf.names.file <- 'tf_names.tsv'
-PARS$meta.data.file <- NULL
-PARS$priors.file <- NULL
-PARS$gold.standard.file <- NULL
+PARS$meta.data.file <- 'metadata_gpl90s.tsv'
+PARS$priors.file <- 'gold_standard_signed.tsv'
+PARS$gold.standard.file <- 'gold_standard.tsv'
+PARS$deg.rates.file <- 'sun_dr_norm_KOcnames.tsv' # can also be a file of Taus.
 PARS$leave.out.file <- NULL
-PARS$randomize.expression <- FALSE
 
 PARS$job.seed <- 42  # set to NULL if a random seed should be used
+PARS$job.seed.prior <- 42
 PARS$save.to.dir <- NULL
-PARS$num.boots <- 20
-PARS$max.preds <- 10
+PARS$num.boots <- 2
+PARS$max.preds <- 10 #This is the maximum number of predictors for each gene.
 PARS$mi.bins <- 10
 PARS$cores <- 8
 
@@ -60,15 +58,14 @@ PARS$pr.sel.mode <- 'random'  # prior selection mode: 'random' or 'tf'
 PARS$eval.on.subset <- FALSE
 
 PARS$method <- 'BBSR'  # 'BBSR' or 'MEN'
-PARS$prior.weight <- 1
+PARS$prior.weight <- 3
 
-PARS$use.tfa <- FALSE
-PARS$prior.ss <- FALSE
+PARS$use.tfa <- TRUE
 
-PARS$output.summary <- FALSE
-PARS$output.report <- FALSE
-PARS$output.tf.plots <- FALSE
-
+PARS$deg.rates <- TRUE #added by Kostya; whether or not to use degradation rates
+PARS$scale.desres <- TRUE #added by Kostya
+PARS$set.deg.rates <- "none" #added by Kostya, 3 options: "taus", "decay", and "none".
+#In case of "taus"/"decay" it is assumed that taus/deg.rates are given by PARS$deg.rates.file.
 
 # some of the elastic net parameters that are essentially constants;
 # only override in config script if you know what you are doing
@@ -82,26 +79,126 @@ PARS$enet.plot.file.name <- NULL  # file name for plots
 
 # input argument is the job config script which overrides the default parameters
 args <- commandArgs(trailingOnly = TRUE)
-if (length(args) == 1) {
+if (length(args) != 0) {
   job.cfg <- args[1]
 } else {
   #job.cfg <- 'jobs/bsubtilis_eu_201310_stfa_bbsr_22.R'
   #job.cfg <- 'jobs/bsubtilis_eu_201310_stfa_bbsr_1_tp0_fp0.R'
-  job.cfg <- '/home/ch1421/Projects/Rice/inferelator_jobs/ALL_htseq_intersection-strict_motifprior_sspr.R'
-  #job.cfg <- '/home/ch1421/Projects/Emily/ILC_inferelator_job.R'
-  #job.cfg <- '/home/ch1421/Projects/Kostya/inferelator_jobs/test.R'
+  #job.cfg <- '/home/ch1421/Projects/Rice/inferelator_jobs/ALL_htseq_intersection-strict_noprior.R'
   #job.cfg <- 'jobs/bsubtilis_eu_201310_stfa_bbsr_tf_11_tp50_fp0.R'
   #job.cfg <- 'jobs/bsubtilis_us_201310_stfa_bbsr_11_tp100_fp0.R'
-  #job.cfg <- 'jobs/bsubtilits_eu_mario_20150420.R'
-  #job.cfg <- 'jobs/bsubtilis_us_synthetic.R'
-  #job.cfg <- 'jobs/bsubtilis_bbsr_tfa.R'
-  #job.cfg <- 'jobs/bsubtilis_us_201502_final_11_tp100_fp0_no_bkdR.R'
+  #job.cfg <- 'jobs/bsubtilis_201408_us_noKO_weight_110_tp_100_fp_000.R'
+  #job.cfg <- 'jobs/yeast_kemmer.R'
+  #job.cfg <- 'jobs/yeast_affy.R'#_sgd.R'#_timeseries_noDR.R'
+  #job.cfg <- 'jobs/yeast_affy_hclust_k5_1.R'
+  #job.cfg <- 'jobs/bsubtilis_kostya.R'
+  job.cfg <- 'jobs/yeast_affy_PS_tp50_deg_rates.R'
+  #job.cfg <- 'jobs/yeast_affy_timeseries_dw1.R'
+  #job.cfg <- 'jobs/yeast_affy_timeseries_dw1.4.R'
+  #job.cfg <- 'jobs/yeast_affy_timeseries_dw0.5.R'
+  #job.cfg <- 'jobs/bsubtilis_us_test.R'
 }
 
 # load job specific parameters from input config file
 if (!is.null(job.cfg)) {
   source(job.cfg)
 }
+
+if (length(args) > 1) {
+  #PARS$priors.file <- args[2]
+  #PARS$gold.standard.file <- args[3]
+  #gs.name <- args[4]
+  PARS$exp.mat.file <- args[2]
+  PARS$meta.data.file <- args[3]
+  #expr.name <- args[4]
+  #nclusts <- as.numeric(args[4])
+  #PARS$tf.names.file <- args[2]
+  PARS$deg.rates.file <- args[4]
+  clustn <- as.numeric(args[5])
+  #PARS$tau <- as.numeric(args[5])
+  #PARS$job.seed <- as.numeric(args[6])
+  #PARS$job.seed.prior <- as.numeric(args[7])
+  save.to.dir = strsplit(PARS$save.to.dir, '/')[[1]]
+  std.last = strsplit(save.to.dir[length(save.to.dir)], '_')[[1]]
+  #std.last.new=paste(c(std.last[1:4], sprintf("tau%03.0f",PARS$tau), std.last[5:6]), collapse='_')
+  std.last.new=paste(c(std.last[1:4], paste("clust",clustn,sep=''), std.last[5:6]), collapse='_')
+  PARS$save.to.dir <- paste(paste(save.to.dir[-length(save.to.dir)], collapse='/'), std.last.new, sep='/')
+}
+
+# read input data
+IN <- read.input(PARS$input.dir, PARS$exp.mat.file, PARS$tf.names.file, 
+                 PARS$meta.data.file, PARS$priors.file, PARS$gold.standard.file,
+                 PARS$leave.out.file, PARS$deg.rates.file)
+
+# keep only TFs that are part of the expression data
+IN$tf.names <- IN$tf.names[IN$tf.names %in% rownames(IN$exp.mat)]
+
+# order genes so that TFs come before the other genes
+gene.order <- rownames(IN$exp.mat)
+gene.order <- c(gene.order[match(IN$tf.names, gene.order)],
+                gene.order[which(!(gene.order %in% IN$tf.names))])
+
+IN$exp.mat <- IN$exp.mat[gene.order, ]
+if (!is.null(IN$priors.mat)) {
+  IN$priors.mat <- IN$priors.mat[gene.order, IN$tf.names]
+}
+if (!is.null(IN$gs.mat)) {
+  IN$gs.mat <- IN$gs.mat[gene.order, IN$tf.names]
+}
+
+if(PARS$reduce.expr == TRUE) {
+  is.gs.mat.row.0 <- rowSums(IN$gs.mat!=0)>0
+}
+
+
+# no meta data given - assume all steady state measurements
+if (is.null(IN$meta.data)) {
+  IN$meta.data <- trivial.meta.data(colnames(IN$exp.mat))
+}
+
+#keep deg. rates for genes only in the expression matrix:
+IN$deg.mat <- IN$deg.mat[rownames(IN$deg.mat) %in% rownames(IN$exp.mat),]
+
+# create the dynamics priors matrix
+dynamics.prior.mat = matrix(0, nrow = nrow(IN$exp.mat), ncol = length(IN$tf.names))
+rownames(dynamics.prior.mat) = rownames(IN$exp.mat)
+if (PARS$deg.rates) {
+  deg.rate.mat = IN$deg.mat[which(rowSums(!is.na(IN$deg.mat)) > 2),]
+  deg.rates = apply(deg.rate.mat,1,median, na.rm=TRUE)
+  dynamics.prior.mat = cbind(NA, dynamics.prior.mat)
+  dynamics.prior.mat[names(deg.rates),1] = -deg.rates #known deg rates
+  dynamics.prior.mat[which(is.na(dynamics.prior.mat[,1])),1] = -median(deg.rates, na.rm=TRUE) #unknown deg rates are set to the mean known deg rate
+  #setting the weights of these priors
+  deg.rate.sd = apply(deg.rate.mat, 1, sd, na.rm=TRUE)
+  dynamics.prior.weights = rep(PARS$dr.weight, nrow(IN$exp.mat))
+  names(dynamics.prior.weights) = rownames(IN$exp.mat)
+  dynamics.prior.weights[names(deg.rate.sd)] = deg.rate.sd * (PARS$dr.weight/median(deg.rate.sd, na.rm=TRUE))
+}
+
+if (PARS$set.deg.rates == "taus" | PARS$set.deg.rates == "decay") {
+  if(!is.null(dim(IN$deg.mat))) {
+    deg.rate.mat = IN$deg.mat[which(rowSums(!is.na(IN$deg.mat)) > 0),]
+    deg.rates = apply(deg.rate.mat,1,median, na.rm=TRUE)
+  } else {
+    deg.rates = IN$deg.mat
+  }
+  deg.rates.all = rep(NA, nrow(IN$exp.mat))
+  names(deg.rates.all) = rownames(IN$exp.mat)
+  if(PARS$set.deg.rates == "taus") {
+    const = 1
+  } else if(PARS$set.deg.rates == "decay") {
+    const = -1
+  }
+  deg.rates.all[names(deg.rates)] = const * deg.rates
+  #deg.rates.all[which(is.na(deg.rates.all))] = const * mean(deg.rates, na.rm=TRUE) #unknown deg rates are set to the mean known deg rate
+  #deg.rates.all[which(is.na(deg.rates.all))] = const * exp(mean(log(deg.rates), na.rm=TRUE))
+  deg.rates.all[which(is.na(deg.rates.all))] = const * median(deg.rates, na.rm=TRUE)
+  IN$decay.or.taus = deg.rates.all
+}
+
+# create dummy clusterStack - a real clusterStack is only needed when inferring 
+# on bi-clusters
+clusterStack <- trivial.cluster.stack(IN$exp.mat)
 
 
 # set the random seed
@@ -113,50 +210,12 @@ if(!is.null(PARS$job.seed)) {
 }
 SEED <- .Random.seed
 
-
-# read input data
-IN <- read.input(PARS$input.dir, PARS$exp.mat.file, PARS$tf.names.file, 
-                 PARS$meta.data.file, PARS$priors.file, PARS$gold.standard.file,
-                 PARS$leave.out.file, PARS$randomize.expression)
-
-# keep only TFs that are part of the expression data
-#IN$tf.names <- IN$tf.names[IN$tf.names %in% rownames(IN$exp.mat)]
-
-# order genes so that TFs come before the other genes
-#gene.order <- rownames(IN$exp.mat)
-#gene.order <- c(gene.order[match(IN$tf.names, gene.order)], 
-#                gene.order[which(!(gene.order %in% IN$tf.names))])
-
-#IN$exp.mat <- IN$exp.mat[gene.order, ]
-#if (!is.null(IN$priors.mat)) {
-#  IN$priors.mat <- IN$priors.mat[gene.order, IN$tf.names]
-#}
-#if (!is.null(IN$gs.mat)) {
-#  IN$gs.mat <- IN$gs.mat[gene.order, IN$tf.names]
-#}
-
-
-# no meta data given - assume all steady state measurements
-if (is.null(IN$meta.data)) {
-  IN$meta.data <- trivial.meta.data(colnames(IN$exp.mat))
-}
-
-
-# create dummy clusterStack - a real clusterStack is only needed when inferring 
-# on bi-clusters
-clusterStack <- trivial.cluster.stack(IN$exp.mat)
-
-
-
-
 if(is.null(PARS$save.to.dir)) {
   PARS$save.to.dir <- file.path(PARS$input.dir, date.time.str)
 }
 cat("Output dir:", PARS$save.to.dir, "\n")
 if (!file.exists(PARS$save.to.dir)){
   dir.create(PARS$save.to.dir, recursive=TRUE)
-} else if (file.exists(paste(PARS$save.to.dir, "/params_and_input.RData", sep=""))) {
-  stop(sprintf('The output file %s already exists. Exiting.', paste(PARS$save.to.dir, "/params_and_input.RData", sep="")))
 }
 
 
@@ -164,40 +223,30 @@ if (!file.exists(PARS$save.to.dir)){
 # create design and response matrix
 ##  .-.-.***.-.-.***.-.-.***.-.-.***.-.-.***.-.-.***.-.-.***.-.-.
 
-cat("Creating design and response matrix ... ")
+#des.res <- design.and.response(IN$meta.data, IN$exp.mat, PARS$delT.min, 
+#                               PARS$delT.max, PARS$tau, clusterStack, 
+#                               IN$tf.names, time_delayed=T, all_intervals=F, 
+#                               use_t0_as_steady_state=F, 
+#                               use_delt_bigger_than_cutoff_as_steady_state=T)
+                               
 des.res <- design.and.response(IN$meta.data, IN$exp.mat, PARS$delT.min, 
-                               PARS$delT.max, PARS$tau)
+                              PARS$delT.max, PARS$tau, PARS$deg.rates,
+                              PARS$set.deg.rates, IN$decay.or.taus,
+                              tfa.corr = 1, PARS$avg.diffs, PARS$cores)
 
 IN$final_response_matrix <- des.res$final_response_matrix
 IN$final_design_matrix <- des.res$final_design_matrix
 resp.idx <- des.res$resp.idx
-cat("done.\n")
                                 
 if (!all(apply(resp.idx, 1, identical, resp.idx[1,]))) {
     stop('This version of the Inferelator does not support biclusters. Sorry.')
 }
     
 
-
-##  .-.-.***.-.-.***.-.-.***.-.-.***.-.-.***.-.-.***.-.-.***.-.-.
-# parse priors parameters and set up priors list
-##  .-.-.***.-.-.***.-.-.***.-.-.***.-.-.***.-.-.***.-.-.***.-.-.
-
-
-cat("Setting up priors list ... ")
-IN$priors <- getPriors(IN$exp.mat, IN$tf.names, IN$priors.mat, IN$gs.mat, 
-                       PARS$eval.on.subset, PARS$job.seed, PARS$perc.tp,
-                       PARS$perm.tp, PARS$perc.fp, PARS$perm.fp, 
-                       PARS$pr.sel.mode)
-cat("done.\n")
-
-
 ##  .-.-.***.-.-.***.-.-.***.-.-.***.-.-.***.-.-.***.-.-.***.-.-.
 # set up the bootstrap permutations
 ##  .-.-.***.-.-.***.-.-.***.-.-.***.-.-.***.-.-.***.-.-.***.-.-.
 
-
-cat("Setting up bootstrap permutations ... ")
 IN$bs.pi <- matrix(0, nrow=PARS$num.boots, ncol=ncol(resp.idx))
 if (PARS$num.boots == 1) {
   IN$bs.pi[1, ] <- resp.idx[1, ]
@@ -206,15 +255,16 @@ if (PARS$num.boots == 1) {
     IN$bs.pi[bootstrap, ] <- resp.idx[1, sample(ncol(resp.idx), replace=TRUE)]
   }
 }
-#IN$bs.prior.rm <- list()
-#if (PARS$num.boots == 1) {
-#  IN$bs.prior.rm[[1]] <- c()
-#} else {
-#  for (bootstrap in 1:PARS$num.boots) {
-#    IN$bs.prior.rm[[bootstrap]] <- setdiff(1:length(IN$priors[[1]]), sample(length(IN$priors[[1]]), replace=TRUE))
-#  }
-#}
-cat("done.\n")
+
+
+##  .-.-.***.-.-.***.-.-.***.-.-.***.-.-.***.-.-.***.-.-.***.-.-.
+# parse priors parameters and set up priors list
+##  .-.-.***.-.-.***.-.-.***.-.-.***.-.-.***.-.-.***.-.-.***.-.-.
+
+IN$priors <- getPriors(IN$exp.mat, IN$tf.names, IN$priors.mat, IN$gs.mat, 
+                       PARS$eval.priors.on.subset, PARS$job.seed.prior, PARS$perc.tp,
+                       PARS$perm.tp, PARS$perc.fp, PARS$perm.fp, 
+                       PARS$pr.sel.mode)
 
 
 ##  .-.-.***.-.-.***.-.-.***.-.-.***.-.-.***.-.-.***.-.-.***.-.-.
@@ -224,119 +274,70 @@ cat("done.\n")
 if(PARS$use.tfa) {
   
   IN$tf.activities <- list()
-  cat("Setting up TFA specific response matrix ... ")
+  
   des.res <- design.and.response(IN$meta.data, IN$exp.mat, PARS$delT.min, 
-                                 PARS$delT.max, PARS$tau/2)
+                                 PARS$delT.max, PARS$tau, PARS$deg.rates,
+                                 PARS$set.deg.rates, IN$decay.or.taus,
+                                 tfa.corr=0.5, PARS$avg.diffs, PARS$cores)
 
   IN$final_response_matrix_halftau <- des.res$final_response_matrix
-  cat("done.\n")
 }
 
 
 ##  .-.-.***.-.-.***.-.-.***.-.-.***.-.-.***.-.-.***.-.-.***.-.-.
 # main loop
 ##  .-.-.***.-.-.***.-.-.***.-.-.***.-.-.***.-.-.***.-.-.***.-.-.
-IN$grouped.pred <- list()
+
 for (prior.name in names(IN$priors)) {
   cat('Method:', PARS$method, '\nWeight:', PARS$prior.weight, '\nPriors:', 
       prior.name, '\n')
-      
   prior <- as.matrix(IN$priors[[prior.name]])
   
   # estimate transcription factor activities
   if(PARS$use.tfa) {
-    prior.tf.activities <- tfa(prior, IN$final_design_matrix, IN$final_response_matrix_halftau)
-    IN$tf.activities[[prior.name]] <- prior.tf.activities
+    IN$tf.activities[[prior.name]] <- tfa(prior, IN$final_design_matrix, IN$final_response_matrix_halftau)
+  }
+    
+  # set the prior weights matrix
+  no.pr.weight <- 1
+  if (sum(prior != 0) > 0) {
+    if (PARS$prior.weight == no.pr.weight) {
+      warning(paste('Priors present, but they will not be used, because \
+                    PARS$prior.weight is set to ', no.pr.weight, '.', sep=''), 
+              immediate. = TRUE)
+    }
+    if (PARS$method == 'BBSR') {
+      no.pr.weight <- 1 / PARS$prior.weight
+    }
+  }
+  weights.mat <- matrix(no.pr.weight, nrow(IN$exp.mat), length(IN$tf.names))
+  weights.mat[prior != 0] <- PARS$prior.weight
+  
+  if(PARS$reduce.expr == TRUE) {
+    weights.mat <- weights.mat[is.gs.mat.row.0,]
   }
   
-  des.mat <- IN$final_design_matrix[IN$tf.with.expr, ]
-  if(PARS$use.tfa) {
-      des.mat <- prior.tf.activities[IN$tf.names, ]
-  }
-  
-  cat("group predictors\n")
-  gp.out <- group.predictors(des.mat, prior, IN$gs.mat, IN$bs.pi, cor.th=0.99)
-  IN$grouped.pred[[prior.name]] <- gp.out
-  cat(sprintf('A total of %d predictors contained NA and were removed.\n', length(gp.out$pred.has.na)))
-  cat(sprintf('A total of %d predictors were constant and were removed.\n', length(gp.out$pred.is.const)))
-  cat(sprintf('A total of %d predictors formed %d groups.\n', length(unique(unlist(gp.out$pred.groups))), length(gp.out$pred.groups)))
-  
-  # above we have used the full prior to get activities and group predictors
-  
-  
-  IN$tf.activities.bs[[prior.name]] <- list()
-  #IN$grouped.pred.bs[[prior.name]] <- list()
   betas <- list()
   betas.resc <- list()
   for (bootstrap in 1:PARS$num.boots) {
     cat("Bootstrap", bootstrap, "of", PARS$num.boots, "\n")
-        
-    # set to FALSE to disable the next block
-    not.done <- PARS$prior.ss
-    gp.out.bs <- gp.out
-    while (not.done) {
-      not.done <- FALSE
-      
-      # set some of the prior interactions to zero
-      prior <- gp.out$prior.mat
-      to.zero <- setdiff(1:length(prior), sample(length(prior), replace=TRUE))
-      cat(sprintf('Setting %d non-zero prior edges to zero\n', sum(prior[to.zero] != 0)))
-      prior[to.zero] <- 0
-      
-      # estimate transcription factor activities
-      if(PARS$use.tfa) {
-        des.mat <- rbind(IN$final_design_matrix, group.expression(gp.out$pred.groups, IN$final_design_matrix))
-        IN$tf.activities.bs[[prior.name]][[bootstrap]] <- tfa(prior, des.mat, IN$final_response_matrix_halftau)
-      }
-      
-      des.mat <- IN$final_design_matrix[IN$tf.with.expr, ]
-      if(PARS$use.tfa) {
-          des.mat <- IN$tf.activities.bs[[prior.name]][[bootstrap]][gp.out$tf.names, ]
-      }
-      
-      # group again? what if we group groups?
-      #cat("group predictors\n")
-      #gp.out.bs <- group.predictors(des.mat, prior, IN$gs.mat, IN$bs.pi, cor.th=0.99, grp.pre='pred.group.bs.')
-      gp.out.bs <- group.predictors(des.mat, prior, gp.out$gs.mat, IN$bs.pi, cor.th=0.99, grp.pre='pred.group.bs.')
-      #IN$grouped.pred.bs[[prior.name]][[bootstrap]] <- gp.out.bs
-      if (length(gp.out.bs$pred.groups) > 0) {
-        cat('grouped predictors - subsample from prior again\n')
-        not.done <- TRUE
-      }
-    }
-    
-      
-    # set the prior weights matrix
-    no.pr.weight <- 1
-    if (sum(prior != 0) > 0) {
-      if (PARS$prior.weight == no.pr.weight) {
-        warning(paste('Priors present, but they will not be used in model selection \
-                      step, because PARS$prior.weight is set to ', no.pr.weight, '.', sep=''), 
-                immediate. = TRUE)
-      }
-      if (PARS$method == 'BBSR') {
-        no.pr.weight <- 1 / PARS$prior.weight
-      }
-    }
-    #weights.mat <- matrix(no.pr.weight, nrow(IN$exp.mat), length(IN$tf.names))
-    #weights.mat[prior != 0] <- PARS$prior.weight
-    weights.mat <- gp.out.bs$prior.mat * 0 + no.pr.weight
-    weights.mat[gp.out.bs$prior.mat != 0] <- PARS$prior.weight
-    
     
     # set up bootstrap specific design and response
-    #X <- IN$final_design_matrix[, IN$bs.pi[bootstrap, ]]
-    X <- gp.out.bs$des.mat[, IN$bs.pi[bootstrap, ]]
+    X <- IN$final_design_matrix[, IN$bs.pi[bootstrap, ]]
     Y <- IN$final_response_matrix[, IN$bs.pi[bootstrap, ]]
+    
+    if(PARS$reduce.expr == TRUE) {
+      Y <- Y[is.gs.mat.row.0,]
+    }
+      
 
     if (nrow(X) > 6000) {
-      #X <- X[IN$tf.names, ]  # speeds up MI calculation for large datasets
-      X <- X[gp.out.bs$tf.names, ]
+      X <- X[IN$tf.names, ]  # speeds up MI calculation for large datasets
     }
     
-    #if(PARS$use.tfa) {
-    #  X <- IN$tf.activities[[prior.name]][, IN$bs.pi[bootstrap, ]]
-    #}
+    if(PARS$use.tfa) {
+      X <- IN$tf.activities[[prior.name]][, IN$bs.pi[bootstrap, ]]
+    }
 
     # fill mutual information matrices
     cat("Calculating MI\n")	
@@ -350,8 +351,19 @@ for (prior.name in names(IN$priors)) {
     cat("Calculating CLR Matrix\n")
     clr.mat = mixedCLR(Ms_bg,Ms)
     dimnames(clr.mat) <- list(rownames(Y), rownames(X))
-    #clr.mat <- clr.mat[, IN$tf.names]
-    clr.mat <- clr.mat[, gp.out.bs$tf.names]
+    clr.mat <- clr.mat[, IN$tf.names]
+    
+    #the following is added by Kostya:
+    #Became mostly unnecessary when I changed one line in design.and.response function
+    if(PARS$deg.rates) {
+      X.dr <- IN$final_design_matrix[, IN$bs.pi[bootstrap, ]]
+      ts.conds <- as.vector(IN$meta.data[which((IN$meta.data$isTs == T) 
+        & (((IN$meta.data$del.t >= PARS$delT.min) & (IN$meta.data$del.t <= PARS$delT.max)) 
+          | (IN$meta.data$is1stLast == "f"))),"condName"])
+    #  X.to.subtract.from.Y <- X.dr
+    #  X.to.subtract.from.Y[,setdiff(colnames(X.to.subtract.from.Y), ts.conds)] = 0
+    #  Y <- Y - X.to.subtract.from.Y # now for steady-state conditions, Y is still the same (and the same as X and IN$exp.mat), but for time-series conditions, it is tau/del.t*(x_j-x_i)
+    }
     
     # DREAM8 induced change:
     #for (tf1 in IN$tf.names) {
@@ -368,17 +380,13 @@ for (prior.name in names(IN$priors)) {
     #}
     
     # get the sparse ODE models
-    #X <- X[IN$tf.names, ]
-    X <- X[gp.out.bs$tf.names, ]
+    X <- X[IN$tf.names, ]
     cat('Calculating sparse ODE models\n')
     if (PARS$method == 'BBSR') {
-      #x <- BBSR(X, Y, clr.mat, PARS$max.preds, no.pr.weight, weights.mat, 
-      #          prior, PARS$cores)
-      x <- BBSR(X, Y, clr.mat, PARS$max.preds, no.pr.weight, weights.mat, 
-                gp.out.bs$prior.mat, PARS$cores)
+      x <- BBSR(X, Y, clr.mat, PARS$max.preds, no.pr.weight, weights.mat, PARS$cores,
+    X.dr, ts.conds, use.deg.rates = PARS$deg.rates, dynamics.prior.mat, dynamics.prior.weights, PARS$scale.desres)
     }
     if (PARS$method == 'MEN' ) {
-      stop('MEN currently not tested - remove this line and proceed at own risk')
       x <- mclapply(1:nrow(Y), callMEN, Xs=X, Y=Y, 
                     clr.mat=clr.mat, nS=PARS$max.preds, nCv=PARS$enet.nCv,
                     lambda=PARS$enet.lambda, verbose=PARS$enet.verbose, 
@@ -390,16 +398,25 @@ for (prior.name in names(IN$priors)) {
     cat('\n')
     
     # our output will be a list holding two matrices: betas and betas.resc
-    #bs.betas <- Matrix(0, nrow(Y), nrow(X), 
-    #                   dimnames=list(rownames(Y), rownames(X)))
-    #bs.betas.resc <- Matrix(0, nrow(Y), nrow(X), 
-    #                        dimnames=list(rownames(Y), rownames(X)))
-    bs.betas <- Matrix(0, nrow(Y), length(gp.out$tf.names), 
-                       dimnames=list(rownames(Y), gp.out$tf.names))
-    bs.betas.resc <- bs.betas
-    for (res in x) {
-      bs.betas[res$ind, rownames(X)[res$pp]] <- res$betas
-      bs.betas.resc[res$ind, rownames(X)[res$pp]] <- res$betas.resc
+    if(PARS$deg.rates) { # added by Kostya
+      bs.betas <- Matrix(0, nrow(Y), nrow(X)+1, 
+                       dimnames=list(rownames(Y), c("deg.rate",rownames(X))))
+      bs.betas.resc <- Matrix(0, nrow(Y), nrow(X)+1, 
+                            dimnames=list(rownames(Y), c("deg.rate",rownames(X))))
+      for (res in x) {
+        bs.betas[res$ind, c(T,res$pp)] <- res$betas
+        bs.betas.resc[res$ind, c(T,res$pp)] <- res$betas.resc
+      }
+    }
+    else {
+      bs.betas <- Matrix(0, nrow(Y), nrow(X), 
+                       dimnames=list(rownames(Y), rownames(X)))
+      bs.betas.resc <- Matrix(0, nrow(Y), nrow(X), 
+                            dimnames=list(rownames(Y), rownames(X)))
+      for (res in x) {
+        bs.betas[res$ind, res$pp] <- res$betas
+        bs.betas.resc[res$ind, res$pp] <- res$betas.resc
+      }
     }
     betas[[bootstrap]] <- bs.betas
     betas.resc[[bootstrap]] <- bs.betas.resc
@@ -416,33 +433,20 @@ for (prior.name in names(IN$priors)) {
   for (beta.resc in betas.resc) {
     comb.confs <- comb.confs + rank(as.matrix(beta.resc), ties.method='average')
   }
-  comb.confs <- Matrix((comb.confs - min(comb.confs)) / (PARS$num.boots * length(comb.confs) - min(comb.confs)))
   save(comb.confs, file=confs.file)
   
-  if (PARS$output.summary) {
-    sum.net(betas, betas.resc, comb.confs, IN, confs.file)
-  }
-  
 }  # end prior.name loop
+
+if(PARS$reduce.expr == TRUE) {
+  IN$priors[[prior.name]] <- IN$priors[[prior.name]][is.gs.mat.row.0,]
+  IN$gs.mat <- IN$gs.mat[is.gs.mat.row.0,]
+}
 
 PROCTIME <- proc.time() - start.proc.time
 save(PARS, IN, SEED, PROCTIME, file = paste(PARS$save.to.dir, "/params_and_input.RData", sep=""))
 
-# generate network report and visualize TFs and targets
-source('R_scripts/net_report_new.R')
-Sys.sleep(2)
-for (ccf in list.files(PARS$save.to.dir, pattern='combinedconf_*', full.names=TRUE)) {
-  if (PARS$output.report) {
-    net.report(normalizePath(ccf))
-  }
-  if (PARS$output.tf.plots) {
-    vis.tfs.and.targets(normalizePath(ccf), CORES=PARS$cores/2)
-  }
+if (!is.null(IN$gs.mat)) {
+  cat('Using gold standard to evaluate results. Evaluate on subset is set to', PARS$eval.on.subset, '. \n')
+  summarizeResults(PARS$save.to.dir, PARS$eval.on.subset)
 }
-
-# this part does not work for grouped predictors
-#if (!is.null(IN$gs.mat)) {
-#  cat('Using gold standard to evaluate results. Evaluate on subset is set to', PARS$eval.on.subset, '. \n')
-#  summarizeResults(PARS$save.to.dir, PARS$eval.on.subset)
-#}
 
