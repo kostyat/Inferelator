@@ -1,4 +1,4 @@
-library('Matrix')
+require(Matrix)
 source('R_scripts/priors.R')
 
 ChristophsPR <- function(ord.idx, gs) {

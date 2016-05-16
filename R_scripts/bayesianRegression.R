@@ -1,28 +1,33 @@
 # TODO: Add comment
 # 
 # Author: Christoph
+# Modified to predict degradation rates by Kostya
 ###############################################################################
 
-BBSR <- function(X, Y, clr.mat, nS, no.pr.val, weights.mat, prior.mat, cores) {
+BBSR <- function(X, Y, clr.mat, nS, no.pr.val, weights.mat, cores, X.dr, ts.conds, use.deg.rates, dynamics.prior.mat, dynamics.prior.weights, scale.desres) {
   
   # Scale and permute design and response matrix
-  X <- t(scale(t(X)))
-  Y <- t(scale(t(Y)))
+  # t(scale(t(X))) makes every row of X a unit vector (in Euclidean norm) with mean 0.
+  if(scale.desres) {
+    X <- t(scale(t(X))) 
+    Y <- t(scale(t(Y)))
+  }
+    
+  #Added by Kostya: First we scale X.dr, then we zero the steady-state conditions:
+  if(use.deg.rates) {
+    if(scale.desres) {
+      X.dr <- t(scale(t(X.dr)))
+    }
+    X.dr[,setdiff(colnames(X.dr), ts.conds)]=0
+  }
   
   G <- nrow(Y)  # number of genes
-  genes <- rownames(Y)
   K <- nrow(X)  # max number of possible predictors (number of TFs)
-  tfs <- rownames(X)
   
-  weights.mat <- weights.mat[genes, tfs]
-  clr.mat <- clr.mat[genes, tfs]
-  prior.mat <- prior.mat[genes, tfs]
-  
-  pp <- matrix(FALSE, G, K, dimnames=list(genes, tfs))  # predictors that will be used in the regression
+  pp <- matrix(FALSE, G, K, dimnames=list(rownames(Y), rownames(X)))  # predictors that will be used in the regression
   
   # keep all predictors that we have priors for
   pp[(weights.mat != no.pr.val) & !is.na(clr.mat)] <- TRUE
-  pp[(prior.mat != 0) & !is.na(clr.mat)] <- TRUE
   
   # for each gene, add the top nS predictors of the list to possible predictors
   clr.mat[clr.mat == 0] <- NA
@@ -30,38 +35,36 @@ BBSR <- function(X, Y, clr.mat, nS, no.pr.val, weights.mat, prior.mat, cores) {
     clr.order <- order(clr.mat[ind, ], decreasing=TRUE, na.last=NA)
     pp[ind, clr.order[1:min(K, nS, length(clr.order))]] <- TRUE
   }
-  # remove self-interactions from list of potential interactions
-  preds <- intersect(genes, tfs)
-  diag(pp[preds, preds]) <- FALSE
+  diag(pp) <- FALSE
   
   # NEW: remove predictors that are constant or essentially duplicates of others
-  #const <- which(apply(is.na(X), 1, sum) > 0)
-  #cat('The following predictors are constant and will not be used:\n')
-  #print(const)
-  #pp[, const] <- FALSE
-  #exp.mat <- X
-  #done <- FALSE
-  #while (!done) {
-  #  cor.mat <- cor(t(exp.mat))
-  #  diag(cor.mat) <- 0
-  #  cor.mat[is.na(cor.mat)] <- 0
-  #  todo <- which(apply(cor.mat > 0.99, 1, sum) > 0)
-  #  if (length(todo) > 0) {
-  #    remove <- which(cor.mat[todo[1], ] > 0.99)[1]
-  #    cat('Removing predictor', rownames(exp.mat)[remove], 'because it has correlation > 0.99 with', rownames(exp.mat)[todo[1]], '\n')
-  #   pp[, rownames(exp.mat)[todo[1]]] <- pp[, rownames(exp.mat)[todo[1]]] | pp[, rownames(exp.mat)[remove]]
-  #    pp[, rownames(exp.mat)[remove]] <- FALSE
-  #    exp.mat <- exp.mat[-remove, ]
-  #  } else {
-  #    done <- TRUE
-  #  }
-  #}
+  const <- which(apply(is.na(X), 1, sum) > 0)
+  cat('The following predictors are constant and will not be used:\n')
+  print(const)
+  pp[, const] <- FALSE
+  exp.mat <- X
+  done <- FALSE
+  while (!done) {
+    cor.mat <- cor(t(exp.mat))
+    diag(cor.mat) <- 0
+    cor.mat[is.na(cor.mat)] <- 0
+    todo <- which(apply(cor.mat > 0.99, 1, sum) > 0)
+    if (length(todo) > 0) {
+      remove <- which(cor.mat[todo[1], ] > 0.99)[1]
+      cat('Removing predictor', rownames(exp.mat)[remove], 'because it has correlation > 0.99 with', rownames(exp.mat)[todo[1]], '\n')
+      pp[, rownames(exp.mat)[todo[1]]] <- pp[, rownames(exp.mat)[todo[1]]] | pp[, rownames(exp.mat)[remove]]
+      pp[, rownames(exp.mat)[remove]] <- FALSE
+      exp.mat <- exp.mat[-remove, ]
+    } else {
+      done <- TRUE
+    }
+  }
   
-  out.list <- mclapply(1:G, BBSRforOneGene, X, Y, pp, weights.mat, nS, mc.cores=cores)
+  out.list <- mclapply(1:G, BBSRforOneGene, X, Y, pp, weights.mat, nS, X.dr, use.deg.rates, dynamics.prior.mat, dynamics.prior.weights, mc.cores=cores)
   return(out.list)
 }
 
-BBSRforOneGene <- function(ind, X, Y, pp, weights.mat, nS) {
+BBSRforOneGene <- function(ind, X, Y, pp, weights.mat, nS, X.dr, use.deg.rates, dynamics.prior.mat, dynamics.prior.weights) {
   if (ind %% 100 == 0) {
     cat('Progress: BBSR for gene', ind, '\n')
   }
@@ -76,109 +79,50 @@ BBSRforOneGene <- function(ind, X, Y, pp, weights.mat, nS) {
   y <- as.vector(Y[ind, ], mode="numeric")
   x <- t(matrix(X[pp.i, ], ncol=ncol(X)))
   g <- matrix(weights.mat[ind, pp.i], ncol=sum(pp.i))
+  if(use.deg.rates) {
+    beta.priors <- dynamics.prior.mat[ind, c(TRUE, pp.i)] #added by Kostya
+    x.ind <- X.dr[ind, ]
+    g <- cbind(dynamics.prior.weights[ind], g)
+  } else { beta.priors <- dynamics.prior.mat[ind, pp.i] }
   
   # experimental stuff
-  spp <- ReduceNumberOfPredictors(y, x, g, nS)
+  spp <- ReduceNumberOfPredictors(y, x, g, nS, beta.priors, use.deg.rates, x.ind)
   pp.i[pp.i == TRUE] <- spp
   x <- t(matrix(X[pp.i, ], ncol=ncol(X)))
   g <- matrix(weights.mat[ind, pp.i], ncol=sum(pp.i))
+  if(use.deg.rates) {
+    beta.priors <- beta.priors[c(TRUE, spp)]
+    g <- cbind(dynamics.prior.weights[ind], g)
+  } else { beta.priors <- beta.priors[spp] }
   
-  betas <- BestSubsetRegression(y, x, g)
-  betas.resc <- PredErrRed(y, x, betas)
+  #Kostya: here I will modify BestSubsetRegression to take x.ind = X.dr[ind,] as an argument
+  betas <- BestSubsetRegression(y, x, g, x.ind, use.deg.rates, beta.priors)
+  if(use.deg.rates) { # added by Kostya because now betas has length nS+1
+    betas.resc <- PredErrRed(y, cbind(x.ind, x), betas)
+  } else {
+    betas.resc <- PredErrRed(y, x, betas)
+  }
   
   return(list(ind=ind, pp=pp.i, betas=betas, betas.resc=betas.resc))
 }
 
-CallBestSubSetRegression <- function(ind, Xs, Y, Pi, clr.mat, nS,
-                                     no.pr.val = NULL,
-                                     weights.mat = NULL) {
-  # Calls best subset regression
-  # TODO: Add more here
-  
-  cat("*")
-  browser()
-  # Scale and permute design and response matrix
-  Xs.scaled <- t(scale(t(Xs[, Pi[ind, ]])))
-  Y.scaled <- t(scale(t(Y[, Pi[ind, ]])))
 
-  K <- nrow(Xs.scaled)  # max number of possible predictors
-    
-  pp <- rep(FALSE, K)  # predictors that will be used in the regression
-  
-  # if a clr matrix is given
-  if (is.null(dim(clr.mat)) == FALSE) {
-    
-    # bump predictors with priors to top of list; not needed anymore
-    #clr.mat[ind, weights.mat[ind, ] != no.pr.val] <- clr.mat[ind, weights.mat[ind, ] != no.pr.val] + max(clr.mat) + .Machine$double.eps
-    
-    # send self predictor to end of list if gene we are inferring on is a TF
-    # also remove as prior if present
-    if (ind <= K) {
-      clr.mat[ind, ind] <- -Inf
-      weights.mat[ind, ind] <- no.pr.val
-    }
-
-    clr.order <- order(clr.mat[ind, ], decreasing=TRUE)
-    have.priors <- which(weights.mat[ind, ] != no.pr.val)
-
-    # potential predictors are the union of predictors with priors and the top
-    # nS ones based on clr matrix
-    pp[unique(c(have.priors, clr.order[1:min(K, nS)]))] <- TRUE
-    
-  }
-  else {
-  
-    pp <- rep(TRUE, K)
-    if (ind <= K) {
-      pp[ind] <- FALSE
-    }
-    
-  }
- 
-  #cat("\n", length(pp), "\n")
-  # create BestSubsetRegression input  
-  y <- as.vector(Y.scaled[ind, ], mode="numeric")
-  x <- t(as.matrix(Xs.scaled[pp, ]))
-  g <- weights.mat[ind, pp]
-
-  # experimental stuff
-  spp <- ReduceNumberOfPredictors(y, x, g, min(K, nS))
-  pp[pp == TRUE] <- spp
-  x <- t(as.matrix(Xs.scaled[pp, ]))
-  g <- weights.mat[ind, pp]
-
-  # run the best subset regression  
-  #Rprof("bssr_new.out")
-  betas.x <- BestSubsetRegression(y, x, g)
-  #betas.x <- BayesianModelAveraging(y, x, g)
-  #Rprof(NULL)
-  #betas.full <- rep(0, K)
-  #betas.full[pp] <- betas.x
-  #names(betas.full) <- rownames(Xs)
-
-  # rescale betas based on amount of error reduction by the predictors
-  betas.resc <- PredErrRed(y, x, betas.x)
-  #betas.resc.full <- rep(0, K)
-  #betas.resc.full[pp] <- betas.resc
-  #names(betas.resc.full) <- rownames(Xs)
-  
-  # cut the crap and end this here
-  return(list(ind=ind, pp=pp, betas=betas.x, betas.resc=betas.resc))
-  
-}
-
-
-ReduceNumberOfPredictors <- function(y, x, g, n) {
-  K <- ncol(x)
+ReduceNumberOfPredictors <- function(y, x, g, n, beta.priors, use.deg.rates, x.ind) {
+  K <- ncol(x) + use.deg.rates
   spp <- 
   if (K <= n) {
-    return(rep(TRUE, K))
+    return(rep(TRUE, K - use.deg.rates))
   }
 
-  combos <- cbind(diag(K) == 1, CombCols(diag(K)))
-  bics <- ExpBICforAllCombos(y, x, g, combos)
+  combos <- cbind(diag(K - use.deg.rates) == 1, CombCols(diag(K - use.deg.rates)))
+  if(use.deg.rates) {
+    combos <- rbind(TRUE, combos)
+    x <- cbind(x.ind, x)
+  }
+  bics <- ExpBICforAllCombos(y, x, g, combos, beta.priors)
   bics.avg <- apply(t(t(combos) * bics), 1, sum)
-  ret <- rep(FALSE, K)
+  if(use.deg.rates) { bics.avg = bics.avg[-1] }
+  ret <- rep(FALSE, K - use.deg.rates)
   ret[order(bics.avg)[1:n]] <- TRUE
   
   return(ret)
@@ -201,15 +145,7 @@ BayesianModelAveraging <- function(y, x, g) {
   return(ret)
 }
 
-BestSubsetRegressionAllWeights <- function(y, x, g){
-  #Do best subset regression without any weight (if this option is chosen)
-  #and with the combination of all weights that are chosen
-  #return the results in a list
-  
-  # Q CH 11|18|2011: Is this ever going to be used?
-}
-
-BestSubsetRegression <- function(y, x, g) {
+BestSubsetRegression <- function(y, x, g, x.ind, use.deg.rates, beta.priors) {
   # Do best subset regression by using all possible combinations of columns of
   # x as predictors of y. Model selection criterion is BIC using results of
   # Bayesian regression with Zellner's g-prior.
@@ -222,12 +158,20 @@ BestSubsetRegression <- function(y, x, g) {
   # Returns:
   #   Beta vector of best model
 
-  K <- ncol(x)
+  K <- ncol(x) + use.deg.rates
   N <- nrow(x)
   ret <- c()
 
-  combos <- AllCombinations(K)
-  bics <- ExpBICforAllCombos(y, x, g, combos)
+  combos <- AllCombinations(K - use.deg.rates)
+  if(use.deg.rates) {
+    combos <- rbind(TRUE, combos)
+    x <- cbind(x.ind, x)
+  }
+  bics <- ExpBICforAllCombos(y, x, g, combos, beta.priors)
+  #UNDER CONSTRUCTION
+  #if(use.deg.rates) { #added by Kostya, in case we want to include deg.rates in model selection step
+  #  bics <- ExpBICforAllCombos(y, x, g, combos)
+    
   
   not.done <- TRUE
   while (not.done) {
@@ -236,12 +180,17 @@ BestSubsetRegression <- function(y, x, g) {
   
     # For the return value, re-compute beta ignoring g-prior.
     betas <- rep(0, K)
-    if (best > 1) {
+    if (best > 1 | use.deg.rates) { #Kostya: because combos[,1] is the null model with all F's.
       x.tmp <- matrix(x[,combos[, best]], N)
       
       tryCatch({
         bhat <- solve(crossprod(x.tmp), crossprod(x.tmp, y))
+        #if(use.deg.rates) {
+        #  if(bhat[1] > 0) { bhat[1] = 0 } #because deg rate can't be negative
+        #  betas[c(T, combos[, best])] <- bhat
+        #} else {
         betas[combos[, best]] <- bhat
+        #}
         not.done <- FALSE
       }, error = function(e) {
         if (any(grepl('solve.default', e$call)) & grepl('singular', e$message)) {
@@ -304,7 +253,7 @@ CombCols <- function(m) {
 }
 
 
-ExpBICforAllCombos <- function(y, x, g, combos) {
+ExpBICforAllCombos <- function(y, x, g, combos, beta.priors) {
   # For a list of combinations of predictors do Bayesian linear regression,
   # more specifically calculate the parametrization of the inverse gamma 
   # distribution that underlies sigma squared using Zellner's g-prior method.
@@ -349,15 +298,18 @@ ExpBICforAllCombos <- function(y, x, g, combos) {
     tryCatch({
       # this is faster than calling lm
       bhat <- solve(xtx[comb, comb], xty[comb])
+      bnot = beta.priors[comb]
       
       ssr <- sum((y - x.tmp %*% bhat)^2)  # sum of squares of residuals
     
         # rate parameter for the inverse gamma sigma squared would be drawn from
         # our guess on the regression vector beta is all 0 for sparse models
         rate <- (ssr + 
-                (0 - t(bhat)) %*% 
+        #        (0 - t(bhat)) %*%
+                (bnot - t(bhat)) %*% #bnot business added by Kostya
                 (xtx[comb, comb] * var.mult[comb, comb]) %*% 
-                t(0 - t(bhat))) / 2
+                t(bnot - t(bhat))) / 2
+        #        t(0 - t(bhat))) / 2
         
         # the expected value of the log of sigma squared based on the 
         # parametrization of the inverse gamma by rate and shape

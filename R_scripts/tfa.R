@@ -28,31 +28,27 @@ fix.pki <- function(pki) {
 # the motivation for dup.self=TRUE is that TFs with identical prior should have 
 # identical TFA
 tfa <- function(prior, exp.mat, exp.mat.halftau, noself=TRUE, dup.self=TRUE) {
-  tfwt <- apply(prior != 0, 2, sum) > 0
-
   duplicates <- c()
   if (dup.self) {
-    duplicates <- duplicated(prior[, tfwt], MARGIN=2) |
-                  duplicated(prior[, tfwt], MARGIN=2, fromLast = TRUE)
-    duplicates <- colnames(prior)[tfwt][duplicates]
+    has.p <- apply(prior != 0, 2, sum) > 0
+    duplicates <- duplicated(t(prior[, has.p])) |
+                  duplicated(t(prior[, has.p]), fromLast = TRUE)
+    duplicates <- colnames(prior)[duplicates]
   }
-
   tfs <- setdiff(colnames(prior), duplicates)
   tfs <- intersect(tfs, rownames(prior))
   if (noself) {
     diag(prior[tfs, tfs]) <- 0
   }
-
-  activities <- matrix(0, ncol(prior), ncol(exp.mat.halftau), 
-    dimnames=list(colnames(prior), colnames(exp.mat.halftau)))
   
-  if (any(tfwt)) {
-    require('corpcor')
-    activities[tfwt, ] <- pseudoinverse(prior[, tfwt, drop=FALSE]) %*% exp.mat.halftau
-  }
+  require('corpcor')
+  activities <- pseudoinverse(prior) %*% exp.mat.halftau
+  dimnames(activities) <- list(colnames(prior), colnames(exp.mat.halftau))
   
-  use.exp <- intersect(colnames(prior)[!tfwt], rownames(exp.mat))
-  activities[use.exp, ] <- exp.mat[use.exp, ]
+  has.no.act <- names(which(apply(prior != 0, 2, sum) == 0))
+  has.no.act <- intersect(has.no.act, rownames(exp.mat))
+  
+  activities[has.no.act, ] <- exp.mat[has.no.act, ]
   
   return(activities)
 }

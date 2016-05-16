@@ -14,6 +14,8 @@
 # output: 
 #			 steadyStateDesignMat, timeSeriesDesignMat
 
+library(parallel)
+
 get_usr_chosen_design <- function(cM, r, delT_min, delT_max, time_delayed, 
                                   all_intervals, use_t0_as_steady_state, 
                                   use_delt_bigger_than_cutoff_as_steady_state) {
@@ -370,8 +372,8 @@ design.and.response.old <- function(meta.data, exp.mat, delT.min, delT.max, tau,
 # notes
 # design matrix is same as exp.mat leaving out last time points
 # response matrix is same as design for steady state; linear interpolation else
-design.and.response <- function(meta.data, exp.mat, delT.min, delT.max, tau) {
-
+design.and.response <- function(meta.data, exp.mat, delT.min, delT.max, tau, use.deg.rates, set.deg.rates, deg.rates, tfa.corr, avg.diffs, cores) {
+  
   cond <- as.character(meta.data$condName)
   prev <- as.character(meta.data$prevCol)
   delt <- meta.data$del.t
@@ -402,12 +404,20 @@ design.and.response <- function(meta.data, exp.mat, delT.min, delT.max, tau) {
   res.mat <- matrix(0, nrow(exp.mat), 0, dimnames=list(rownames(exp.mat), NULL))
   
   # handle all the steady state conditions first
+  #Replaced old code with a faster way. This is 400x faster and saves me 3.5 minutes for yeast.
   steady <- is.na(prev) & !(cond %in% prev)
   des.mat <- cbind(des.mat, exp.mat[, cond[steady]])
-  res.mat <- cbind(res.mat, exp.mat[, cond[steady]])
+  colnames(des.mat) <- cond[steady]
+  if(set.deg.rates == 'decay') {
+    res.mat <- cbind(res.mat, exp.mat[, cond[steady]] * -deg.rates)
+  } else {
+    res.mat <- cbind(res.mat, exp.mat[, cond[steady]])
+  }
+  colnames(res.mat) <- cond[steady]
   
   # handle time series
-  for (i in which(!steady)) {
+  des.res.ts.list <- mclapply(which(!steady), function(i) {
+  #for (i in which(!steady)) {
     # find the conditions that follow this one and are at least delT.min far apart
     following <- which(prev == cond[i])
     following.delt <- delt[following]
@@ -423,34 +433,130 @@ design.and.response <- function(meta.data, exp.mat, delT.min, delT.max, tau) {
     # for each following condition (time point)
     n <- length(following)
     cntr <- 1
+    des.mat.temp <- matrix(0, nrow(exp.mat), 0, dimnames=list(rownames(exp.mat), NULL))
+    res.mat.temp <- matrix(0, nrow(exp.mat), 0, dimnames=list(rownames(exp.mat), NULL))
+    cnames <- c()
     for (j in following) {
       if (n > 1) {
         this.cond <- sprintf('%s_dupl%02d', cond[i], cntr)
       } else {
         this.cond <- cond[i]
       }
-      des.mat <- cbind(des.mat, exp.mat[, cond[i]])
-      colnames(des.mat)[ncol(des.mat)] <- this.cond
+      #des.mat <- cbind(des.mat, exp.mat[, cond[i]])
+      #colnames(des.mat)[ncol(des.mat)] <- this.cond
+      des.mat.temp <-  cbind(des.mat.temp, exp.mat[, cond[i]])
+      cnames <- cbind(cnames, this.cond)
       
-      interp.res <- tau / following.delt[cntr] * (exp.mat[, cond[j]] - exp.mat[, cond[i]]) + exp.mat[, cond[i]]
-      res.mat <- cbind(res.mat, interp.res)
-      colnames(res.mat)[ncol(res.mat)] <- this.cond
+      dX.dt <- (exp.mat[, cond[j]] - exp.mat[, cond[i]]) / following.delt[cntr]
+      
+      if(avg.diffs) {
+        if(!is.na(prev[i])) {
+          h = which(cond == prev[i]) #this is the previous condition
+          if(length(h) > 1) { #this case is most certainly a replicate or a bug
+            exp.mat.h <- rowSums(exp.mat[, cond[h]])/length(h)
+          } else { exp.mat.h <- exp.mat[, cond[h]] }
+          dX.dt <- (dX.dt + (exp.mat[, cond[i]] - exp.mat.h) / delt[i]) / 2
+        }
+      }
+      
+      if(!use.deg.rates) { #added by Kostya
+        if(set.deg.rates == "decay") {
+          interp.res <- tfa.corr * dX.dt - exp.mat[, cond[i]] * deg.rates
+      } else if(set.deg.rates == "taus") {
+          interp.res <- tfa.corr * deg.rates * dX.dt + exp.mat[, cond[i]]
+      } else {
+        interp.res <- tfa.corr * tau * dX.dt + exp.mat[, cond[i]]
+      } }
+      else {
+        interp.res <- tfa.corr * dX.dt
+      }
+      #res.mat <- cbind(res.mat, interp.res)
+      #colnames(res.mat)[ncol(res.mat)] <- this.cond
+      res.mat.temp <- cbind(res.mat.temp, interp.res)
       
       cntr <- cntr + 1
     }
     
     # special case: nothing is following this condition within delT.min
     # and it is the first of a time series --- treat as steady state
-    if (n == 0 & is.na(prev[i])) {
-      des.mat <- cbind(des.mat, exp.mat[, cond[i]])
-      colnames(des.mat)[ncol(des.mat)] <- cond[i]
-      res.mat <- cbind(res.mat, exp.mat[, cond[i]])
-      colnames(res.mat)[ncol(res.mat)] <- cond[i]
+    if (n == 0 & !(cond[i] %in% prev)) {
+      #des.mat <- cbind(des.mat, exp.mat[, cond[i]])
+      #colnames(des.mat)[ncol(des.mat)] <- cond[i]
+      this.cond <- cond[i]
+      cnames <- cbind(cnames, this.cond)
+      des.mat.temp <- cbind(des.mat.temp, exp.mat[, cond[i]])
+      if(set.deg.rates == "decay") {
+        #res.mat <- cbind(res.mat, exp.mat[, cond[i]] * -deg.rates)
+        res.mat.temp <- cbind(res.mat.temp, exp.mat[, cond[i]] * -deg.rates)
+      } else {
+        #res.mat <- cbind(res.mat, exp.mat[, cond[i]])
+        res.mat.temp <- cbind(res.mat.temp, exp.mat[, cond[i]])
+      }
+      #colnames(res.mat)[ncol(res.mat)] <- cond[i]
     }
-    
-  }
+    return(list(des.mat = des.mat.temp, res.mat = res.mat.temp, cnames = cnames))
+  }, mc.cores = cores)
   
+  #"Unpacking" the time-series list of design and response matrices
+  des.ts <- lapply(des.res.ts.list, function(x) { return(x$des.mat) } )
+  res.ts <- lapply(des.res.ts.list, function(x) { return(x$res.mat) } )
+  des.mat.ts = Reduce(cbind, des.ts)
+  res.mat.ts = Reduce(cbind, res.ts)
+  cnames.ts <- unlist(lapply(des.res.ts.list, function(x) { return(x$cnames) } ))
+  colnames(des.mat.ts) = cnames.ts
+  colnames(res.mat.ts) = cnames.ts
+  des.mat <- cbind(des.mat, des.mat.ts)
+  res.mat <- cbind(res.mat, res.mat.ts)
   resp.idx <- t(matrix(1:ncol(res.mat), ncol(res.mat), nrow(exp.mat)))
   return(list(final_design_matrix=des.mat, final_response_matrix=res.mat, resp.idx=resp.idx))
 }
 
+
+########################################
+#KMT April 9 2015
+#This function removes extra rows in the meta data file
+#Which is useful when deleting extra columns in the expression file:
+
+meta.reduce <- function(meta, expr.cnames) {
+  rm.cols = setdiff(meta$condName, expr.cnames)#conditions to remove
+  which.rm = which(meta$condName %in% rm.cols)
+  #Before we remove these, we need to look at the ones that are time series and change the table accordingly:
+  which.ts = which.rm[which(meta$isTs[which.rm])]
+  for(rm in which.ts) {
+    if(meta$is1stLast[rm] == "f") {
+      next.tps = which(meta$prevCol == as.vector(meta$condName[rm]))
+      next.last = next.tps[which(meta$is1stLast[next.tps] == "l")]
+      next.mid = next.tps[which(meta$is1stLast[next.tps] != "l")]
+      #first we deal with the ones that end at the next time point
+      #so they need to be converted to a steady state entry:
+      meta[next.last, "isTs"] = FALSE
+      meta[next.last, "is1stLast"] = "e"
+      meta[next.last, "prevCol"] = NA
+      meta[next.last,"del.t"] = 0
+      #next we approach the ones that stay as time series
+      meta[next.mid,"is1stLast"] = "f"
+      meta[next.mid,"prevCol"] = NA
+      meta[next.mid,"del.t"] = 0
+    } else if(meta$is1stLast[rm] == "m") {
+      next.tps = which(meta$prevCol == as.vector(meta$condName[rm]))
+      meta[next.tps,"prevCol"] = meta[rm,"prevCol"]
+      meta[next.tps,"del.t"] = meta[rm,"del.t"] + meta[next.tps,"del.t"]
+    } else {
+      prev = which(meta$condName == as.vector(meta$prevCol[rm]))
+      prev.first = prev[which(meta$is1stLast[prev] == "f")]
+      prev.mid = prev[which(meta$is1stLast[prev] != "f")]
+      #first we need to deal with the ones that start at the previous pt
+      #so they need to be converted to a steady state entry:
+      meta[prev.first, "isTs"] = FALSE
+      meta[prev.first, "is1stLast"] = "e"
+      meta[prev.first, "prevCol"] = NA
+      meta[prev.first,"del.t"] = 0
+      #then we can approach the ones that stay as time series:
+      meta[prev.mid, "is1stLast"] = "l"
+    }
+  }
+  #Now we are ready to remove the extra rows:
+  meta.new = meta[-which.rm,]
+  return(meta.new)
+}
+  
