@@ -20,7 +20,7 @@ meta = data.frame(isTs=c(TRUE,TRUE,TRUE,TRUE,FALSE),
   del.t = c(NA, 1, 2, 5, NA),
   condName = c('ts1','ts2','ts3','ts4','ss'))
 
-exp.mat = matrix(c(1:10),nrow=2, byrow=T, dimnames=list(paste("gene",1:2,sep=''), c(paste("ts",1:4,sep=''),'ss')))
+exp.mat = matrix(c(1:10),nrow=2, byrow=F, dimnames=list(paste("gene",1:2,sep=''), c(paste("ts",1:4,sep=''),'ss')))
 
 des.res <- design.and.response(meta, exp.mat, delT.min, delT.max, tau)
 
