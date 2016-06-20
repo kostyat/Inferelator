@@ -479,7 +479,7 @@ design.and.response <- function(meta.data, exp.mat, delT.min, delT.max, tau, use
     
     # special case: nothing is following this condition within delT.min
     # and it is the first of a time series --- treat as steady state
-    if (n == 0 & !(cond[i] %in% prev)) {
+    if(n == 0 & is.na(prev[i])) {
       #des.mat <- cbind(des.mat, exp.mat[, cond[i]])
       #colnames(des.mat)[ncol(des.mat)] <- cond[i]
       this.cond <- cond[i]
