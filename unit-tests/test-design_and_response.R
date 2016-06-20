@@ -20,7 +20,7 @@ meta = data.frame(isTs=c(TRUE,TRUE,TRUE,TRUE,FALSE),
   del.t = c(NA, 1, 2, 5, NA),
   condName = c('ts1','ts2','ts3','ts4','ss'))
 
-exp.mat = matrix(c(1:10),nrow=2, byrow=F, dimnames=list(paste("gene",1:2,sep=''), c(paste("ts",1:4,sep=''),'ss')))
+exp.mat = matrix(c(1:10),nrow=2, byrow=T, dimnames=list(paste("gene",1:2,sep=''), c(paste("ts",1:4,sep=''),'ss')))
 
 des.res <- design.and.response(meta, exp.mat, delT.min, delT.max, tau)
 
@@ -28,20 +28,20 @@ des.res <- design.and.response(meta, exp.mat, delT.min, delT.max, tau)
 
 #des.res$final_response_matrix
 #      ts4 ss      ts1 ts2 ts3
-#gene1   7  9 3.666667   5   5
-#gene2   8 10 4.666667   6   6
+#gene1   4  5 2.333333   3
+#gene2   9 10 7.333333   8
 
 #des.res$final_design_matrix
 #      ts4 ss ts1 ts2 ts3
-#gene1   7  9   1   3   5
-#gene2   8 10   2   4   6
+#gene1   4  5   1   2
+#gene2   9 10   6   7
 
 #des.res$resp.idx
-#     [,1] [,2] [,3] [,4] [,5]
-#[1,]    1    2    3    4    5
-#[2,]    1    2    3    4    5
+#     [,1] [,2] [,3] [,4]
+#[1,]    1    2    3    4
+#[2,]    1    2    3    4
 
 
 ### Weird behavior:
 # When delT.max is 5 or higher, ss column gets renamed to V1
-# When delT.min is greater than 2 (and everything else is the same), ts2 disappears.
+# (When delT.min is greater than 2 (and everything else is the same), ts2 disappears.) -- this was only true for the code Christoph sent me in August 2015, but not for the code that is on github; he must have fixed it.
